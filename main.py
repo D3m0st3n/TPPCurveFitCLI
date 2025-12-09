@@ -19,17 +19,11 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 from scipy.optimize import curve_fit
-# try:
-#             # Try to import scipy for curve fitting
-#             from scipy.optimize import curve_fit
-# except ImportError:
-#     raise ImportError(
-#         "SciPy is required for curve fitting. Install with: pip install scipy"
-#     )
+
 ### Classes
 class SigmoidFitter:
     """
-    Sigmoid curve fitting class to use on TPP data.
+    Sigmoid curve fitting class to use on TPP data. Temperature unit is °C.
     """
 
     def __init__(self, log_level : int = logging.INFO):
@@ -56,6 +50,10 @@ class SigmoidFitter:
         self.rmse = np.nan
         self.r_squared = np.nan
 
+    def __repr__(self):
+        print(f"""Sigmoid Curve Fitter \n 
+              With parameters : pl = {self.pl:.4f}, a = {self.a:.4f}, b = {self.b:.4f} \n 
+              And statistics : rmse = {self.rmse:.4f}, r_squared = {self.r_squared:.4f}""")
 
     # TPP formula
     @staticmethod
@@ -128,13 +126,15 @@ class SigmoidFitter:
     def eval(self, temperature):
         return self.tpp_sigmoid(temperature, self.pl, self.a, self.b)
     
-    def get_melting_temp(self):
-        x = np.arange(0, 100.01, 0.01)
-        y = [self.tpp_sigmoid(x, self.pl, self.a, self.b) for x_ in x]
-        melting_temp = x[(np.abs(y - 0.5)).argmin()] 
+    def get_melting_temp(self) -> float:
+        """Compute estimated melting temperature of protein.
+        Estimation done on an 0°C to 100°C with a step of 0.01.
 
-        self.logger.info(f"Melting temperature estimate. Tm = {melting_temp:.4f}")
-        self.logger.info(f"Using parameters: {self.pl, self.a, self.b}")
+        Returns:
+            float : melting temperature in °C. 2 decimals precision.
+        """
+        x = np.arange(0, 100.01, 0.01)
+        melting_temp = x[(np.abs(self.tpp_sigmoid(x, self.pl, self.a, self.b) - 0.5)).argmin()] 
 
         return melting_temp
 
@@ -246,25 +246,43 @@ class MeltomeAtlasHandler(DataHandler):
             subset = self.data.groupby(by=group_key).sample(n)
             return subset
         except Exception as e:
-            logging.error(f"Error sampling data: {str(e)}")
+            self.logger.error(f"Error sampling data: {str(e)}")
             raise 
 
     def filter_data(self):
         pass
     
     def process_chunk(self, chunk : pd.DataFrame):
-        results = {'pid' : [], 'runName' : [], 'pl' : [], 'a' : [], 'b' : [], 'tm_pred' : [], 'tm_flip' : []}
+
+        results = {'pid' : [], 'runName' : [], 'pl' : [], 'a' : [], 'b' : [],
+                   'rmse' : [], 'r_squared' : [], 'tm_pred' : [], 'tm_flip' : []}
         
         try :
             for i, row in chunk.iterrows():
+
+                self.logger.debug(f"Chunk progress : {i} / {len(chunk)}, pid : {row.uniprotAccession}, specie : {row.runName}")
+
                 # Intialize curve fitter and loading melting behaviour
-                curve_fitter = SigmoidFitter(self.logger.level)
+                melting_curve = SigmoidFitter(self.logger.level)
                 melting_data = pd.DataFrame(row.meltingBehaviour)
-                curve_fitter.fit_curve(melting_data.temperature.to_numpy(), melting_data.fold_change.to_numpy())
+                
+                # Fit melting curve
+                melting_curve.fit_curve(melting_data.temperature.to_numpy(), melting_data.fold_change.to_numpy())
+
+                # Fill results 
+                results['pid'].append(row.uniprotAccession)
+                results['runName'].append(row.runName)
+                results['pl'].append(round(melting_curve.pl, 6))
+                results['a'].append(round(melting_curve.a, 6))
+                results['b'].append(round(melting_curve.b, 6))
+                results['rmse'].append(round(melting_curve.rmse, 4))
+                results['r_squared'].append(round(melting_curve.r_squared, 4))
+                results['tm_pred'].append(melting_curve.get_melting_temp())
+                results['tm_flip'].append(row.meltingPoint)
             return results
         
         except Exception as e:
-            logging.error(f" Error in processing chunk : {e}")
+            self.logger.error(f" Error in processing chunk : {e}")
             raise
 
     def process(self, num_chunks : int = 100):
@@ -282,7 +300,7 @@ class MeltomeAtlasHandler(DataHandler):
 
         for chunk_i in chunk_indices:
             
-            self.logger.debug(f"Processing chunk {chunk_i} out of {len(chunk_indices)}")
+            self.logger.debug(f"Processing chunk {chunk_i} / {len(chunk_indices)} (size : {len(chunk_i)})")
             
             chunk = self.data.loc[chunk_i]
             chunk_results = self.process_chunk(chunk)
@@ -329,7 +347,7 @@ def setup_logging(log_file: Optional[str] = None, log_level: int = logging.INFO)
 def main():
     now = datetime.datetime.now()
     timestamp_str = now.strftime("%Y-%m-%d_%H-%M")
-    setup_logging(f'./{timestamp_str}_main.log', logging.INFO)
+    setup_logging(f'C:/Users/alexa/Documents/PROHITS/Code/MeltingBehaviourCLI/{timestamp_str}_main.log', logging.INFO)
     
     return 0
 
