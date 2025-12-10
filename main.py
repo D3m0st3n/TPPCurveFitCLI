@@ -117,11 +117,12 @@ class SigmoidFitter:
 
             return results
         except RuntimeError as e:
-            self.logger.error(f"Curve fitting failed: {str(e)}")
-            # raise ValueError(f"Failed to fit curve: {str(e)}")
+            # self.logger.error(f"Curve fitting failed: {str(e)}")
+            raise ValueError("Curve fitting failed to converge.") from e
+        
         except Exception as e:
             self.logger.error(f"Error during fitting: {str(e)}")
-            # raise
+            raise
         
     def eval(self, temperature):
         return self.tpp_sigmoid(temperature, self.pl, self.a, self.b)
@@ -254,9 +255,9 @@ class MeltomeAtlasHandler(DataHandler):
         pass
 
     def process_row(self, row : pd.DataFrame):
-        results = {'pid' : [], 'runName' : [], 'pl' : [], 'a' : [], 'b' : [],
-                   'rmse' : [], 'r_squared' : [], 'tm_pred' : [], 'tm_flip' : []}
-        
+        pid = row.uniprotAccession
+        run_name = row.runName
+
         try:
             # Intialize curve fitter and loading melting behaviour
             melting_curve = SigmoidFitter(self.logger.level)
@@ -265,22 +266,38 @@ class MeltomeAtlasHandler(DataHandler):
             # Fit melting curve
             melting_curve.fit_curve(melting_data.temperature.to_numpy(), melting_data.fold_change.to_numpy())
 
-            # Fill results 
-            results['pid'].append(row.uniprotAccession)
-            results['runName'].append(row.runName)
-            results['pl'].append(round(melting_curve.pl, 6))
-            results['a'].append(round(melting_curve.a, 6))
-            results['b'].append(round(melting_curve.b, 6))
-            results['rmse'].append(round(melting_curve.rmse, 4))
-            results['r_squared'].append(round(melting_curve.r_squared, 4))
-            results['tm_pred'].append(melting_curve.get_melting_temp())
-            results['tm_flip'].append(row.meltingPoint)
+            
+            return {
+            'pid': pid,
+            'runName': run_name,
+            'pl': round(melting_curve.pl, 6),
+            'a': round(melting_curve.a, 6),
+            'b': round(melting_curve.b, 6),
+            'rmse': round(melting_curve.rmse, 4),
+            'r_squared': round(melting_curve.r_squared, 4),
+            'tm_pred': melting_curve.get_melting_temp(),
+            'tm_flip': row.meltingPoint,
+            'status': 'SUCCESS' # Add a status flag
+        }
         
-        except Exception as e:
-            self.logger.error(f"Error in processing row : {e}")
-            raise
 
-        return results
+        except ValueError as e:
+            # Log the failure with full context and the index
+            self.logger.error(f"FAILURE (Fit): {pid} - {run_name} failed to converge. Reason: {e}")
+            
+            return {
+            'pid': pid, 
+            'runName': run_name, 
+            'status': 'FAILURE', 
+            'error_message': str(e),
+            'pl': np.nan, 'a': np.nan, 'b': np.nan,  'rmse': np.nan, 'r_squared': np.nan, 
+            'tm_pred': np.nan, 'tm_flip': row.meltingPoint
+        }
+
+    
+        except Exception as e:
+            self.logger.critical(f"FATAL ERROR in processing row {pid} - {run_name}: {e}")
+            raise
     
     def process_chunk(self, chunk : pd.DataFrame):
 
@@ -288,6 +305,9 @@ class MeltomeAtlasHandler(DataHandler):
                    'rmse' : [], 'r_squared' : [], 'tm_pred' : [], 'tm_flip' : []}
         
         for i, (index, row) in enumerate(chunk.iterrows()):
+            pid = row.uniprotAccession
+            run_name = row.runName
+
             try :
                 self.logger.info(f"Chunk progress : {i} / {len(chunk)}, pid : {row.uniprotAccession}, specie : {row.runName}")
 
@@ -299,8 +319,8 @@ class MeltomeAtlasHandler(DataHandler):
                 melting_curve.fit_curve(melting_data.temperature.to_numpy(), melting_data.fold_change.to_numpy())
 
                 # Fill results 
-                results['pid'].append(row.uniprotAccession)
-                results['runName'].append(row.runName)
+                results['pid'].append(pid)
+                results['runName'].append(run_name)
                 results['pl'].append(round(melting_curve.pl, 6))
                 results['a'].append(round(melting_curve.a, 6))
                 results['b'].append(round(melting_curve.b, 6))
@@ -309,8 +329,20 @@ class MeltomeAtlasHandler(DataHandler):
                 results['tm_pred'].append(melting_curve.get_melting_temp())
                 results['tm_flip'].append(row.meltingPoint)
 
+            except ValueError as e:
+                # Log the failure with full context and the index
+                self.logger.error(
+                    f"FAILURE (Fit): {pid} - {run_name} at index {index} failed to converge. "
+                    f"Reason: {e}"
+                )
+                continue # Go to the next iteration (next row)
+
             except Exception as e:
-                self.logger.error(f" Error in processing row : {e}")
+                self.logger.critical(
+                    f"FATAL ERROR in processing row {pid} - {run_name} at index {index}. "
+                    f"Unexpected Exception: {e}"
+                )
+                # Reraise the exception to stop the entire chunk if it's a fatal issue
                 raise
 
         return results
@@ -330,26 +362,55 @@ class MeltomeAtlasHandler(DataHandler):
 
         # Main processing loop
         results = pd.DataFrame()
+        intialize = True
         for i, chunk_i in enumerate(chunk_indices):
             
             self.logger.info(f"Processing chunk {i} / {len(chunk_indices)} (size : {len(chunk_i)})")
             
             try:
-
+                # Process chunk
                 chunk = self.data.iloc[chunk_i]
                 chunk_results = pd.DataFrame(self.process_chunk(chunk))
+                # Save chunk results              
+                self.save_curve_fit_results(chunk_results, intialize)
+                intialize = False
+                # 
                 results = pd.concat([results, chunk_results], ignore_index=True)
-        
+
             except Exception as e:
                 self.logger.error(f"Error in processing chunk : {e}")
                 raise
-        
+            
         return results
         
+    def save_curve_fit_results(self, results : pd.DataFrame, intialize : bool = False):
+        
+        # Save curve fitting results - and only curve fitting results.
+        # Manage output file
+        # Create file
+        # Append to file 
+        # How to include an overwrite functionality?
+        if results.empty:
+            return
 
+        output_file = self.output_dir / "curve_fit.csv"
+        file_mode = 'a'
+        header = False
+        
+        if intialize:
+            file_mode = 'x'
+            header = True 
 
-    def save_results(self, output_path):
-        pass
+        self.logger.debug(f"Writing results to {output_file.name} in mode {file_mode}")
+
+        try:
+            results.to_csv(output_file, mode=file_mode, index=False, header=header)
+
+        except IOError as e:
+            self.logger.error(f"Failed to write results to CSV file {output_file}: {e}")
+            raise
+        
+
 
 class TppPlotter:
     pass
@@ -387,13 +448,13 @@ def setup_logging(log_file: Optional[str] = None, log_level: int = logging.INFO)
         logger.addHandler(file_handler)
         
         logging.info(f"Logging to file: {log_file}")
-        logging.info(f"Logging level: {log_level}")
-
 
 def main():
     now = datetime.datetime.now()
     timestamp_str = now.strftime("%Y-%m-%d_%H-%M")
-    setup_logging(f'C:/Users/alexa/Documents/PROHITS/Code/MeltingBehaviourCLI/{timestamp_str}_main.log', logging.INFO)
+    output_path = 'C:/Users/alexa/Documents/PROHITS/Output/MeltingBehaviourCLI'
+    setup_logging(f'{output_path}/{timestamp_str}_main.log', logging.INFO)
+
     
     return 0
 
