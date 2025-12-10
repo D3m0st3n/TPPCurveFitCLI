@@ -70,7 +70,7 @@ class SigmoidFitter:
         # Initial parameters
         if p0 is not None:
             self.p0 = p0
-        self.logger.info(f"Initial parameters: {self.p0}")
+        self.logger.debug(f"Initial parameters: {self.p0}")
         
         try:
             self.method = 'trf'
@@ -112,16 +112,16 @@ class SigmoidFitter:
                 'initial_parameters': self.p0
             }
 
-            self.logger.info(f"Fitting complete. R² = {self.r_squared:.4f}, RMSE = {self.rmse:.4f}")
-            self.logger.info(f"Fitted parameters: pl = {self.pl:.6f}, a = {self.a:.6f}, b = {self.b:.6f}")
+            self.logger.debug(f"Fitting complete. R² = {self.r_squared:.4f}, RMSE = {self.rmse:.4f}")
+            self.logger.debug(f"Fitted parameters: pl = {self.pl:.6f}, a = {self.a:.6f}, b = {self.b:.6f}")
 
             return results
         except RuntimeError as e:
             self.logger.error(f"Curve fitting failed: {str(e)}")
-            raise ValueError(f"Failed to fit curve: {str(e)}")
+            # raise ValueError(f"Failed to fit curve: {str(e)}")
         except Exception as e:
             self.logger.error(f"Error during fitting: {str(e)}")
-            raise
+            # raise
         
     def eval(self, temperature):
         return self.tpp_sigmoid(temperature, self.pl, self.a, self.b)
@@ -221,9 +221,10 @@ class MeltomeAtlasHandler(DataHandler):
     It also manage output directories for various tasks.
     """
     def __init__(self, flip_meltome_path : str, output_path : str, log_level : int = logging.INFO):
-        super().__init__()
+        super().__init__(log_level)
         self.logger.info(f"Meltome Handler initialization")
-
+        self.logger.debug(f"DEBUG Mode")
+        
         # Meltome loading
         if not os.path.exists(flip_meltome_path):
             raise FileNotFoundError(f"Input file not found: {flip_meltome_path}")
@@ -251,16 +252,44 @@ class MeltomeAtlasHandler(DataHandler):
 
     def filter_data(self):
         pass
+
+    def process_row(self, row : pd.DataFrame):
+        results = {'pid' : [], 'runName' : [], 'pl' : [], 'a' : [], 'b' : [],
+                   'rmse' : [], 'r_squared' : [], 'tm_pred' : [], 'tm_flip' : []}
+        
+        try:
+            # Intialize curve fitter and loading melting behaviour
+            melting_curve = SigmoidFitter(self.logger.level)
+            melting_data = pd.DataFrame(row.meltingBehaviour)
+            
+            # Fit melting curve
+            melting_curve.fit_curve(melting_data.temperature.to_numpy(), melting_data.fold_change.to_numpy())
+
+            # Fill results 
+            results['pid'].append(row.uniprotAccession)
+            results['runName'].append(row.runName)
+            results['pl'].append(round(melting_curve.pl, 6))
+            results['a'].append(round(melting_curve.a, 6))
+            results['b'].append(round(melting_curve.b, 6))
+            results['rmse'].append(round(melting_curve.rmse, 4))
+            results['r_squared'].append(round(melting_curve.r_squared, 4))
+            results['tm_pred'].append(melting_curve.get_melting_temp())
+            results['tm_flip'].append(row.meltingPoint)
+        
+        except Exception as e:
+            self.logger.error(f"Error in processing row : {e}")
+            raise
+
+        return results
     
     def process_chunk(self, chunk : pd.DataFrame):
 
         results = {'pid' : [], 'runName' : [], 'pl' : [], 'a' : [], 'b' : [],
                    'rmse' : [], 'r_squared' : [], 'tm_pred' : [], 'tm_flip' : []}
         
-        try :
-            for i, row in chunk.iterrows():
-
-                self.logger.debug(f"Chunk progress : {i} / {len(chunk)}, pid : {row.uniprotAccession}, specie : {row.runName}")
+        for i, (index, row) in enumerate(chunk.iterrows()):
+            try :
+                self.logger.info(f"Chunk progress : {i} / {len(chunk)}, pid : {row.uniprotAccession}, specie : {row.runName}")
 
                 # Intialize curve fitter and loading melting behaviour
                 melting_curve = SigmoidFitter(self.logger.level)
@@ -279,11 +308,12 @@ class MeltomeAtlasHandler(DataHandler):
                 results['r_squared'].append(round(melting_curve.r_squared, 4))
                 results['tm_pred'].append(melting_curve.get_melting_temp())
                 results['tm_flip'].append(row.meltingPoint)
-            return results
-        
-        except Exception as e:
-            self.logger.error(f" Error in processing chunk : {e}")
-            raise
+
+            except Exception as e:
+                self.logger.error(f" Error in processing row : {e}")
+                raise
+
+        return results
 
     def process(self, num_chunks : int = 100):
         
@@ -298,19 +328,34 @@ class MeltomeAtlasHandler(DataHandler):
         
         self.logger.debug(f"Data split into {len(chunk_indices)} chunks")
 
-        for chunk_i in chunk_indices:
+        # Main processing loop
+        results = pd.DataFrame()
+        for i, chunk_i in enumerate(chunk_indices):
             
-            self.logger.debug(f"Processing chunk {chunk_i} / {len(chunk_indices)} (size : {len(chunk_i)})")
+            self.logger.info(f"Processing chunk {i} / {len(chunk_indices)} (size : {len(chunk_i)})")
             
-            chunk = self.data.loc[chunk_i]
-            chunk_results = self.process_chunk(chunk)
+            try:
 
-        pass
+                chunk = self.data.iloc[chunk_i]
+                chunk_results = pd.DataFrame(self.process_chunk(chunk))
+                results = pd.concat([results, chunk_results], ignore_index=True)
+        
+            except Exception as e:
+                self.logger.error(f"Error in processing chunk : {e}")
+                raise
+        
+        return results
+        
 
 
     def save_results(self, output_path):
         pass
 
+class TppPlotter:
+    pass
+
+
+### Functions
 def setup_logging(log_file: Optional[str] = None, log_level: int = logging.INFO) -> None:
     """
     Set up logging configuration.
@@ -342,6 +387,7 @@ def setup_logging(log_file: Optional[str] = None, log_level: int = logging.INFO)
         logger.addHandler(file_handler)
         
         logging.info(f"Logging to file: {log_file}")
+        logging.info(f"Logging level: {log_level}")
 
 
 def main():

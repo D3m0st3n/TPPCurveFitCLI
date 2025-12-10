@@ -4,9 +4,8 @@
 # 2. Ignore all folders whose names start with 'results_'
 results_*/
 
-# 3. Ignore two unique files
+# 3. Ignore unique files
 # test.ipynb
-test_loc0.csv
 
 # 4. Ignore Python bytecode cache directory
 __pycache__/
