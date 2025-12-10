@@ -1,12 +1,14 @@
-# 1. Ignore all .log files
+# 1. Ignore files
 *.log
 
 # 2. Ignore all folders
 test/
+example/
 results_*/
 
 # 3. Ignore unique files
 # test.ipynb
+TODO.md
 
 # 4. Ignore Python bytecode cache directory
 __pycache__/

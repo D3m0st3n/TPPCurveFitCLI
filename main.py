@@ -329,12 +329,11 @@ class MeltomeAtlasHandler(DataHandler):
                 results['tm_flip'].append(row.meltingPoint)
 
             except ValueError as e:
-                # If curve fitting fail, no results will be appear
                 self.logger.error(
                     f"FAILURE (Fit): {pid} - {run_name} at index {index} failed to converge. "
                     f"Reason: {e}"
                 )
-                
+                # Also curve fitting fails, results will be filled with NaN.
                 results['pid'].append(pid)
                 results['runName'].append(run_name)
                 results['pl'].append(np.nan)
@@ -396,12 +395,14 @@ class MeltomeAtlasHandler(DataHandler):
         return results
         
     def save_curve_fit_results(self, results : pd.DataFrame, intialize : bool = False):
-        
-        # Save curve fitting results - and only curve fitting results.
-        # Manage output file
-        # Create file
-        # Append to file 
-        # How to include an overwrite functionality?
+        """
+        Save results to a CSV file in output path of instance. Output file always named curve_fit.csv
+        Handle file creation or append with the initialize argument.
+
+        Args:
+            results (pd.DataFrame): Dataframe containing curve fit results
+            intialize (bool, optional): Define if results should be appeneded or if a new file has to be created. Defaults to False.
+        """
         if results.empty:
             return
 
