@@ -293,7 +293,6 @@ class MeltomeAtlasHandler(DataHandler):
             'pl': np.nan, 'a': np.nan, 'b': np.nan,  'rmse': np.nan, 'r_squared': np.nan, 
             'tm_pred': np.nan, 'tm_flip': row.meltingPoint
         }
-
     
         except Exception as e:
             self.logger.critical(f"FATAL ERROR in processing row {pid} - {run_name}: {e}")
@@ -330,11 +329,22 @@ class MeltomeAtlasHandler(DataHandler):
                 results['tm_flip'].append(row.meltingPoint)
 
             except ValueError as e:
-                # Log the failure with full context and the index
+                # If curve fitting fail, no results will be appear
                 self.logger.error(
                     f"FAILURE (Fit): {pid} - {run_name} at index {index} failed to converge. "
                     f"Reason: {e}"
                 )
+                
+                results['pid'].append(pid)
+                results['runName'].append(run_name)
+                results['pl'].append(np.nan)
+                results['a'].append(np.nan)
+                results['b'].append(np.nan)
+                results['rmse'].append(np.nan)
+                results['r_squared'].append(np.nan)
+                results['tm_pred'].append(np.nan)
+                results['tm_flip'].append(row.meltingPoint)
+                
                 continue # Go to the next iteration (next row)
 
             except Exception as e:
@@ -349,7 +359,7 @@ class MeltomeAtlasHandler(DataHandler):
 
     def process(self, num_chunks : int = 100):
         
-        self.logger.info(f"Starting curve fitting process")
+        self.logger.info(f"START - curve fitting process")
 
         # Split data into chuncks
         num_chunks = num_chunks
@@ -365,7 +375,7 @@ class MeltomeAtlasHandler(DataHandler):
         intialize = True
         for i, chunk_i in enumerate(chunk_indices):
             
-            self.logger.info(f"Processing chunk {i} / {len(chunk_indices)} (size : {len(chunk_i)})")
+            self.logger.info(f"Processing chunk {i+1} / {len(chunk_indices)} (size : {len(chunk_i)})")
             
             try:
                 # Process chunk
@@ -380,7 +390,9 @@ class MeltomeAtlasHandler(DataHandler):
             except Exception as e:
                 self.logger.error(f"Error in processing chunk : {e}")
                 raise
-            
+        
+        self.logger.info(f"END - Curve fitting process")
+
         return results
         
     def save_curve_fit_results(self, results : pd.DataFrame, intialize : bool = False):
