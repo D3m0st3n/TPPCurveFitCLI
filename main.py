@@ -243,6 +243,7 @@ class MeltomeAtlasHandler(DataHandler):
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.logger.info(f"Output directory: {self.output_dir.absolute()}")
     
+
     def select_subset(self, n : int, group_key : str = 'runName'):
         try:
             subset = self.data.groupby(by=group_key).sample(n)
@@ -283,7 +284,10 @@ class MeltomeAtlasHandler(DataHandler):
 
         except ValueError as e:
             # Log the failure with full context and the index
-            self.logger.error(f"FAILURE (Fit): {pid} - {run_name} failed to converge. Reason: {e}")
+            self.logger.error(
+                f"FAILURE (Fit): {pid} - {run_name} failed to converge at index {row.name}."
+                f"Reason: {e}"
+            )
             
             return {
             'pid': pid, 
@@ -295,7 +299,10 @@ class MeltomeAtlasHandler(DataHandler):
         }
     
         except Exception as e:
-            self.logger.critical(f"FATAL ERROR in processing row {pid} - {run_name}: {e}")
+            self.logger.critical(
+                f"FATAL ERROR in processing row {pid} - {run_name} at index {row.name}. "
+                f"Unexpected Exception: {e}"
+            )
             raise
     
     def process_chunk(self, chunk : pd.DataFrame):
@@ -393,7 +400,10 @@ class MeltomeAtlasHandler(DataHandler):
         self.logger.info(f"END - Curve fitting process")
 
         return results
-        
+    
+    def process_paralle(self, num_chunks : int = 100, n_jobs : int = 4):
+        pass
+
     def save_curve_fit_results(self, results : pd.DataFrame, intialize : bool = False):
         """
         Save results to a CSV file in output path of instance. Output file always named curve_fit.csv
