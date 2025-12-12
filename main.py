@@ -225,11 +225,13 @@ class MeltomeAtlasHandler(DataHandler):
         super().__init__(log_level)
         self.logger.info(f"Meltome Handler initialization")
         self.logger.debug(f"DEBUG Mode")
-        
+
         # Meltome loading
         if not os.path.exists(flip_meltome_path):
             raise FileNotFoundError(f"Input file not found: {flip_meltome_path}")
         
+        # Result header 
+        self.header = ['pid', 'runName', 'pl', 'a', 'b', 'rmse', 'r_squared', 'tm_pred', 'tm_flip']
         try:
             self.data = pd.read_json(flip_meltome_path)
             self.logger.info(f"Meltome data loaded from {flip_meltome_path}")
@@ -364,7 +366,6 @@ class MeltomeAtlasHandler(DataHandler):
         return results
 
     def process(self, num_chunks : int = 100):
-        
         self.logger.info(f"START - curve fitting process")
 
         # Split data into chuncks
@@ -388,7 +389,7 @@ class MeltomeAtlasHandler(DataHandler):
                 chunk = self.data.iloc[chunk_i]
                 chunk_results = pd.DataFrame(self.process_chunk(chunk))
                 # Save chunk results              
-                self.save_curve_fit_results(chunk_results, intialize)
+                self.save_curve_fit_results(chunk_results[self.header], intialize)
                 intialize = False
                 # 
                 results = pd.concat([results, chunk_results], ignore_index=True)
@@ -401,22 +402,63 @@ class MeltomeAtlasHandler(DataHandler):
 
         return results
     
-    def process_paralle(self, num_chunks : int = 100, n_jobs : int = 4):
-        pass
+    def process_parallel(self, num_chunks : int = 100, n_jobs : int = 4):
+        
+        self.logger.info(f"START - curve fitting process parallel")
 
-    def save_curve_fit_results(self, results : pd.DataFrame, intialize : bool = False):
+        # Split data into chuncks
+        num_chunks = num_chunks
+        if len(self.data) > num_chunks:
+            chunk_indices = np.array_split(np.arange(len(self.data)), num_chunks)
+        else:
+            chunk_indices = np.arange(len(self.data))
+        
+        self.logger.debug(f"Data split into {len(chunk_indices)} chunks")
+        self.logger.info(f"NOTE : Parallel processing of chunks does not log row progress")
+
+        
+        # Main processing loop
+        results = pd.DataFrame()
+        intialize = True
+        for i, chunk_i in enumerate(chunk_indices):
+            
+            self.logger.info(f"Processing chunk {i+1} / {len(chunk_indices)} (size : {len(chunk_i)})")
+            try:
+                # Process chunk
+                chunk = self.data.iloc[chunk_i]
+                chunk_results = pd.DataFrame(Parallel(n_jobs=n_jobs)(delayed(self.process_row)(row) for i, row in chunk.iterrows()))
+                
+                # Save chunk results              
+                self.save_curve_fit_results(chunk_results[self.header], intialize)
+                # Record curve fit failure in a separate file?
+                # self.save_curve_fit_results(chunk_results[chunk_results.status == 'FAILURE'], intialize, 'curve_fit_failure.csv')
+                intialize = False
+                # 
+                results = pd.concat([results, chunk_results],ignore_index=True)
+
+            except Exception as e:
+                self.logger.error(f"Error in processing chunk {i}: {e}")
+                raise
+        
+        self.logger.info(f"END - Curve fitting process parallel")
+
+        return results
+        
+
+    def save_curve_fit_results(self, results : pd.DataFrame, intialize : bool = False, output_file : str = "curve_fit.csv"):
         """
-        Save results to a CSV file in output path of instance. Output file always named curve_fit.csv
+        Save results to a CSV file in output path of instance.
         Handle file creation or append with the initialize argument.
 
         Args:
             results (pd.DataFrame): Dataframe containing curve fit results
             intialize (bool, optional): Define if results should be appeneded or if a new file has to be created. Defaults to False.
+            output_file (str): Name of output file. defautls to curve_fit.csv.
         """
         if results.empty:
             return
 
-        output_file = self.output_dir / "curve_fit.csv"
+        output_file = self.output_dir / output_file
         file_mode = 'a'
         header = False
         
