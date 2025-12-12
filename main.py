@@ -51,9 +51,9 @@ class SigmoidFitter:
         self.r_squared = np.nan
 
     def __repr__(self):
-        print(f"""Sigmoid Curve Fitter \n 
-              With parameters : pl = {self.pl:.4f}, a = {self.a:.4f}, b = {self.b:.4f} \n 
-              And statistics : rmse = {self.rmse:.4f}, r_squared = {self.r_squared:.4f}""")
+        return f"""Sigmoid Curve Fitter \n 
+        With parameters : pl = {self.pl:.4f}, a = {self.a:.4f}, b = {self.b:.4f} \n 
+        And statistics : rmse = {self.rmse:.4f}, r_squared = {self.r_squared:.4f}"""
 
     # TPP formula
     @staticmethod
@@ -65,10 +65,10 @@ class SigmoidFitter:
     def get_parameter_names():
         return ['pl', 'a', 'b']
 
-    def fit_curve(self, temperature : np.ndarray, fold_change : np.ndarray, p0 : np.ndarray = None):
+    def fit_curve(self, temperature : np.ndarray, fold_change : np.ndarray, p0 : np.ndarray = np.array([])):
 
         # Initial parameters
-        if p0 is not None:
+        if not np.empty(p0):
             self.p0 = p0
         self.logger.debug(f"Initial parameters: {self.p0}")
         
@@ -137,7 +137,7 @@ class SigmoidFitter:
         x = np.arange(0, 100.01, 0.01)
         melting_temp = x[(np.abs(self.tpp_sigmoid(x, self.pl, self.a, self.b) - 0.5)).argmin()] 
 
-        return melting_temp
+        return float(melting_temp)
 
     def get_parameters(self) -> dict:
         """
@@ -211,8 +211,8 @@ class DataHandler:
     def save_results(self, output_path):
         pass
 
-    def process(self):
-        pass
+    def process(self) -> pd.DataFrame:
+        return pd.DataFrame()
     
 
 class MeltomeAtlasHandler(DataHandler):
@@ -365,7 +365,7 @@ class MeltomeAtlasHandler(DataHandler):
 
         return results
 
-    def process(self, num_chunks : int = 100):
+    def process(self, num_chunks : int = 100) -> pd.DataFrame:
         self.logger.info(f"START - curve fitting process")
 
         # Split data into chuncks
@@ -402,7 +402,7 @@ class MeltomeAtlasHandler(DataHandler):
 
         return results
     
-    def process_parallel(self, num_chunks : int = 100, n_jobs : int = 4):
+    def process_parallel(self, num_chunks : int = 100, n_jobs : int = 4) -> pd.DataFrame:
         
         self.logger.info(f"START - curve fitting process parallel")
 
@@ -426,7 +426,7 @@ class MeltomeAtlasHandler(DataHandler):
             try:
                 # Process chunk
                 chunk = self.data.iloc[chunk_i]
-                chunk_results = pd.DataFrame(Parallel(n_jobs=n_jobs)(delayed(self.process_row)(row) for i, row in chunk.iterrows()))
+                chunk_results = pd.DataFrame(Parallel(n_jobs=n_jobs, verbose=11)(delayed(self.process_row)(row) for _, row in chunk.iterrows())) # type: ignore
                 
                 # Save chunk results              
                 self.save_curve_fit_results(chunk_results[self.header], intialize)
@@ -458,7 +458,7 @@ class MeltomeAtlasHandler(DataHandler):
         if results.empty:
             return
 
-        output_file = self.output_dir / output_file
+        output_f = self.output_dir / output_file
         file_mode = 'a'
         header = False
         
@@ -466,7 +466,7 @@ class MeltomeAtlasHandler(DataHandler):
             file_mode = 'x'
             header = True 
 
-        self.logger.debug(f"Writing results to {output_file.name} in mode {file_mode}")
+        self.logger.debug(f"Writing results to {output_f.name} in mode {file_mode}")
 
         try:
             results.to_csv(output_file, mode=file_mode, index=False, header=header)
