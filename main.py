@@ -12,6 +12,7 @@ import sys
 import argparse
 import logging
 import datetime
+import textwrap
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Callable
 
@@ -65,10 +66,10 @@ class SigmoidFitter:
     def get_parameter_names():
         return ['pl', 'a', 'b']
 
-    def fit_curve(self, temperature : np.ndarray, fold_change : np.ndarray, p0 : np.ndarray = np.array([])):
+    def fit_curve(self, temperature : np.ndarray, fold_change : np.ndarray, p0 : np.ndarray = np.array([0.1, 1, 0.1])):
 
         # Initial parameters
-        if not np.empty(p0):
+        if (p0 != self.p0).any():
             self.p0 = p0
         self.logger.debug(f"Initial parameters: {self.p0}")
         
@@ -224,14 +225,18 @@ class MeltomeAtlasHandler(DataHandler):
     def __init__(self, flip_meltome_path : str, output_path : str, log_level : int = logging.INFO):
         super().__init__(log_level)
         self.logger.info(f"Meltome Handler initialization")
-        self.logger.debug(f"DEBUG Mode")
 
         # Meltome loading
         if not os.path.exists(flip_meltome_path):
             raise FileNotFoundError(f"Input file not found: {flip_meltome_path}")
         
+        if not str(flip_meltome_path).endswith('.json'):
+            raise ValueError(f"Input file is not in JSON format: {flip_meltome_path}")
+        
         # Result header 
         self.header = ['pid', 'runName', 'pl', 'a', 'b', 'rmse', 'r_squared', 'tm_pred', 'tm_flip']
+        
+        # Load data
         try:
             self.data = pd.read_json(flip_meltome_path)
             self.logger.info(f"Meltome data loaded from {flip_meltome_path}")
@@ -251,8 +256,7 @@ class MeltomeAtlasHandler(DataHandler):
             subset = self.data.groupby(by=group_key).sample(n)
             return subset
         except Exception as e:
-            self.logger.error(f"Error sampling data: {str(e)}")
-            raise 
+            raise ValueError(f"Error sampling data: {str(e)}")
 
     def filter_data(self):
         pass
@@ -317,7 +321,7 @@ class MeltomeAtlasHandler(DataHandler):
             run_name = row.runName
 
             try :
-                self.logger.info(f"Chunk progress : {i} / {len(chunk)}, pid : {row.uniprotAccession}, specie : {row.runName}")
+                self.logger.info(f"Chunk progress : {i+1} / {len(chunk)}, pid : {row.uniprotAccession}, specie : {row.runName}")
 
                 # Intialize curve fitter and loading melting behaviour
                 melting_curve = SigmoidFitter(self.logger.level)
@@ -369,7 +373,6 @@ class MeltomeAtlasHandler(DataHandler):
         self.logger.info(f"START - curve fitting process")
 
         # Split data into chuncks
-        num_chunks = num_chunks
         if len(self.data) > num_chunks:
             chunk_indices = np.array_split(np.arange(len(self.data)), num_chunks)
         else:
@@ -402,12 +405,11 @@ class MeltomeAtlasHandler(DataHandler):
 
         return results
     
-    def process_parallel(self, num_chunks : int = 100, n_jobs : int = 4) -> pd.DataFrame:
+    def process_parallel(self, num_chunks : int = 100, n_jobs : int = 10) -> pd.DataFrame:
         
         self.logger.info(f"START - curve fitting process parallel")
 
         # Split data into chuncks
-        num_chunks = num_chunks
         if len(self.data) > num_chunks:
             chunk_indices = np.array_split(np.arange(len(self.data)), num_chunks)
         else:
@@ -426,7 +428,7 @@ class MeltomeAtlasHandler(DataHandler):
             try:
                 # Process chunk
                 chunk = self.data.iloc[chunk_i]
-                chunk_results = pd.DataFrame(Parallel(n_jobs=n_jobs, verbose=11)(delayed(self.process_row)(row) for _, row in chunk.iterrows())) # type: ignore
+                chunk_results = pd.DataFrame(Parallel(n_jobs=n_jobs)(delayed(self.process_row)(row) for _, row in chunk.iterrows())) # type: ignore
                 
                 # Save chunk results              
                 self.save_curve_fit_results(chunk_results[self.header], intialize)
@@ -445,7 +447,7 @@ class MeltomeAtlasHandler(DataHandler):
         return results
         
 
-    def save_curve_fit_results(self, results : pd.DataFrame, intialize : bool = False, output_file : str = "curve_fit.csv"):
+    def save_curve_fit_results(self, results : pd.DataFrame, intialize : bool = False, output_file = "curve_fit.csv"):
         """
         Save results to a CSV file in output path of instance.
         Handle file creation or append with the initialize argument.
@@ -458,7 +460,7 @@ class MeltomeAtlasHandler(DataHandler):
         if results.empty:
             return
 
-        output_f = self.output_dir / output_file
+        output_file = Path(self.output_dir / output_file)
         file_mode = 'a'
         header = False
         
@@ -466,7 +468,8 @@ class MeltomeAtlasHandler(DataHandler):
             file_mode = 'x'
             header = True 
 
-        self.logger.debug(f"Writing results to {output_f.name} in mode {file_mode}")
+        self.logger.debug(f"Output dir {output_file}")
+        self.logger.debug(f"Writing results to {output_file.name} in mode {file_mode}")
 
         try:
             results.to_csv(output_file, mode=file_mode, index=False, header=header)
@@ -514,12 +517,113 @@ def setup_logging(log_file: Optional[str] = None, log_level: int = logging.INFO)
         
         logging.info(f"Logging to file: {log_file}")
 
+def get_comon_parser(description = "Script Description", epilog = None):
+    parser = argparse.ArgumentParser(description=description,
+        epilog=textwrap.dedent(epilog) if epilog else None,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    # Required arguments
+    parser.add_argument(
+        "-i", "--input",
+        type=str,
+        help="Path to input data file"
+    )
+    
+    parser.add_argument(
+        "-o", "--output",
+        type=str,
+        default=".",
+        help="Path to output directory for results"
+    )
+    
+    parser.add_argument(
+        "-f", "--format",
+        type=str,
+        choices=['mass_spec', 'long_f', "flip"],
+        help="Define input format and how it will handle by the program"    
+    )
+    
+    parser.add_argument(
+        "-p", "--parallel",
+        action="store_true",
+        help="Defines if input file is processed with parallelization"
+    )
+    
+    parser.add_argument(
+        "--n_chunks",
+        type=int,
+        default=100,
+        help="Number of chunks to split the data into for processing"
+    )
+    
+    parser.add_argument(
+        "--n_jobs",
+        type=int,
+        default=10,
+        help="Number of jobs (rows to process) in parallel. Only works if --parallel is set to True."
+    )
+    
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Enable verbose logging (DEBUG level)"
+    )
+    
+    parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Suppress log output (WARNING level only)"
+    )
+    
+    return parser
+
 def main():
+    # Timestamp
     now = datetime.datetime.now()
     timestamp_str = now.strftime("%Y-%m-%d_%H-%M")
-    output_path = 'C:/Users/alexa/Documents/PROHITS/Output/MeltingBehaviourCLI'
-    setup_logging(f'{output_path}/{timestamp_str}_main.log', logging.INFO)
+    
 
+    """Main entry point for the CLI script."""
+    
+    description = "Curve Fitting Tool with External Function"
+    epilog = """AAAAAAH!"""
+    parser = get_comon_parser(description=description, epilog=epilog)
+        
+    args = parser.parse_args()
+    
+    # Set log level
+    if args.verbose:
+        LOG_LEVEL = logging.DEBUG
+    elif args.quiet:
+        LOG_LEVEL = logging.WARNING
+    else:
+        LOG_LEVEL = logging.INFO
+    
+    # output_path = 'C:/Users/alexa/Documents/PROHITS/Output/MeltingBehaviourCLI'
+
+    LOG_FILE = f'main_{timestamp_str}.log'
+    LOG_PATH = os.path.join(args.output, LOG_FILE)
+    setup_logging(LOG_PATH, LOG_LEVEL)
+    
+    output_path = args.output
+    result_file = f'results_meltome_{timestamp_str}'
+    output_path = os.path.join(output_path, result_file)
+    
+    logging.info(f"Log level: {logging.getLevelName(LOG_LEVEL)}")
+    
+    if args.format == 'flip':
+        data_handler = MeltomeAtlasHandler(args.input, output_path, LOG_LEVEL)
+        if args.parallel:
+            data_handler.process_parallel(args.n_chunks, args.n_jobs)
+        else:
+            data_handler.process(args.n_chunks)
+            
+    if args.format == 'mass_spec':
+        return NotImplemented
+    if args.format == 'long_f':
+        return NotImplemented
+    else:
+        return NotImplemented
+    
     
     return 0
 

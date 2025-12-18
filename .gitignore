@@ -1,9 +1,9 @@
 # 1. Ignore files
 *.log
+config_paths.py
 
 # 2. Ignore all folders
 test/
-example/
 results_*/
 
 # 3. Ignore unique files
