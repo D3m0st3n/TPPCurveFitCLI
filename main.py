@@ -15,11 +15,16 @@ import datetime
 import textwrap
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, Callable
+from enum import Enum
 
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 from scipy.optimize import curve_fit
+
+import matplotlib.pyplot as plt
+from matplotlib.legend_handler import HandlerTuple
+import seaborn as sns
 
 ### Classes
 class SigmoidFitter:
@@ -50,7 +55,8 @@ class SigmoidFitter:
         # Statistics
         self.rmse = np.nan
         self.r_squared = np.nan
-
+                 
+    
     def __repr__(self):
         return f"""Sigmoid Curve Fitter \n 
         With parameters : pl = {self.pl:.4f}, a = {self.a:.4f}, b = {self.b:.4f} \n 
@@ -62,10 +68,13 @@ class SigmoidFitter:
         y = (1 - pl) / (1 + np.exp(b - (a / x))) + pl
         return y
 
+    def eval(self, temperature):
+        return self.tpp_sigmoid(temperature, self.pl, self.a, self.b)
+    
     @staticmethod
     def get_parameter_names():
         return ['pl', 'a', 'b']
-
+    
     def fit_curve(self, temperature : np.ndarray, fold_change : np.ndarray, p0 : np.ndarray = np.array([0.1, 1, 0.1])):
 
         # Initial parameters
@@ -118,16 +127,12 @@ class SigmoidFitter:
 
             return results
         except RuntimeError as e:
-            # self.logger.error(f"Curve fitting failed: {str(e)}")
             raise ValueError("Curve fitting failed to converge.") from e
         
         except Exception as e:
             self.logger.error(f"Error during fitting: {str(e)}")
             raise
-        
-    def eval(self, temperature):
-        return self.tpp_sigmoid(temperature, self.pl, self.a, self.b)
-    
+   
     def get_melting_temp(self) -> float:
         """Compute estimated melting temperature of protein.
         Estimation done on an 0°C to 100°C with a step of 0.01.
@@ -150,9 +155,12 @@ class SigmoidFitter:
         """
         return {'pl' : self.pl, 'a' : self.a, 'b' : self.b}
     
+    def set_parameters(self, params : dict):
+        self.a, self.b, self.pl = params['a'], params['b'], params['pl']
+    
     def get_parameters_error(self):
         return np.sqrt(np.diag(self.pcov))
-    
+        
     def get_intial_parameters(self):
         return self.p0
     
@@ -161,7 +169,7 @@ class SigmoidFitter:
 
     def get_statistics(self):
         return {'rmse': self.rmse, 'r_squared' : self.r_squared}
-    
+
 class DataHandler:
     """
     Generic Data handling class for loading TPP data, fit a sigmoid, and save results.
@@ -214,6 +222,103 @@ class DataHandler:
 
     def process(self) -> pd.DataFrame:
         return pd.DataFrame()
+
+class LongFormatHandler(DataHandler):
+    
+    def __init__(self, file_path : str, output_path : str, log_level : int = logging.INFO) -> None:
+        super().__init__(log_level)
+        self.logger.info("LongF Handler initialization")
+        
+        self.n_jobs = 6
+        
+        # Check if input path/file is viable
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Input file not found: {file_path}")
+        
+        if not str(file_path).endswith('.csv'):
+            raise ValueError(f"Input file is not in CSV format: {file_path}")
+
+        # Result header 
+        self.header = ['pid', 'pl', 'a', 'b', 'rmse', 'r_squared', 'tm_pred']
+        
+        # Load data
+        try:
+            self.data = pd.read_csv(file_path)
+            self.logger.info(f"LongF data loaded from {file_path}")
+            self.logger.info(f"LongF header {self.data.columns.to_list()}")
+    
+        except Exception as e:
+            raise ValueError(f"Error loading data: {str(e)}")
+        
+        # Ouptut creation
+        self.output_dir = Path(output_path)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.logger.info(f"Output directory: {self.output_dir.absolute()}")
+
+        
+    def normalize_chunk(self, data_serie : pd.DataFrame) -> pd.DataFrame:
+        data_serie.Abundance = data_serie.Abundance / data_serie.sort_values(by='Temperature').Abundance.iloc[0]
+        return data_serie
+
+    def normalize_dataframe_parallel(self, data : pd.DataFrame, n_jobs : int = 6):
+        
+        chunks = data.groupby(by=['Accession', 'Replicate']).groups
+        normalized_data = pd.concat(Parallel(n_jobs=6)(delayed(self.normalize_chunk)(data.loc[ids]) for _, ids in chunks.items()))
+        
+        normalized_data
+        
+        return normalized_data
+    
+    def normalize_data(self, n_jobs : int = 6):
+        self.data = self.normalize_dataframe_parallel(self.data, n_jobs)
+    
+    def process_serie(self, data_serie : pd.DataFrame):
+        pid = data_serie.Accession.iloc[0]
+        replicate = data_serie.Replicate.iloc[0]
+        
+        try:
+            # Intialize curve fitter and loading melting behaviour
+            melting_curve = SigmoidFitter(self.logger.level)
+            
+            # Fit melting curve
+            melting_curve.fit_curve(data_serie.Temperature.to_numpy(), data_serie.Abundance.to_numpy())
+
+                
+            return {
+            'pid': pid,
+            'replicate' : replicate,
+            'pl': round(melting_curve.pl, 6),
+            'a': round(melting_curve.a, 6),
+            'b': round(melting_curve.b, 6),
+            'rmse': round(melting_curve.rmse, 4),
+            'r_squared': round(melting_curve.r_squared, 4),
+            'tm_pred': melting_curve.get_melting_temp(),
+            'status': 'SUCCESS' # Add a status flag
+            }   
+            
+
+        except ValueError as e:
+            # Log the failure with full context and the index
+            self.logger.error(
+                f"FAILURE (Fit): {pid} - {replicate} failed to converge at index."
+                f"Reason: {e}"
+            )
+            
+            return {
+            'pid': pid, 
+            'replicate': replicate, 
+            'status': 'FAILURE', 
+            'error_message': str(e),
+            'pl': np.nan, 'a': np.nan, 'b': np.nan,  'rmse': np.nan, 'r_squared': np.nan, 
+            'tm_pred': np.nan
+            }
+        
+        except Exception as e:
+            self.logger.critical(
+                f"FATAL ERROR in processing serie {pid} - {replicate}. "
+                f"Unexpected Exception: {e}"
+            )
+            raise
     
 
 class MeltomeAtlasHandler(DataHandler):
@@ -234,7 +339,7 @@ class MeltomeAtlasHandler(DataHandler):
             raise ValueError(f"Input file is not in JSON format: {flip_meltome_path}")
         
         # Result header 
-        self.header = ['pid', 'runName', 'pl', 'a', 'b', 'rmse', 'r_squared', 'tm_pred', 'tm_flip']
+        self.header = ['pid', 'replicate', 'runName', 'pl', 'a', 'b', 'rmse', 'r_squared', 'tm_pred']
         
         # Load data
         try:
@@ -273,7 +378,6 @@ class MeltomeAtlasHandler(DataHandler):
             # Fit melting curve
             melting_curve.fit_curve(melting_data.temperature.to_numpy(), melting_data.fold_change.to_numpy())
 
-            
             return {
             'pid': pid,
             'runName': run_name,
@@ -364,7 +468,6 @@ class MeltomeAtlasHandler(DataHandler):
                     f"FATAL ERROR in processing row {pid} - {run_name} at index {index}. "
                     f"Unexpected Exception: {e}"
                 )
-                # Reraise the exception to stop the entire chunk if it's a fatal issue
                 raise
 
         return results
@@ -432,10 +535,8 @@ class MeltomeAtlasHandler(DataHandler):
                 
                 # Save chunk results              
                 self.save_curve_fit_results(chunk_results[self.header], intialize)
-                # Record curve fit failure in a separate file?
-                # self.save_curve_fit_results(chunk_results[chunk_results.status == 'FAILURE'], intialize, 'curve_fit_failure.csv')
                 intialize = False
-                # 
+                #
                 results = pd.concat([results, chunk_results],ignore_index=True)
 
             except Exception as e:
@@ -478,12 +579,204 @@ class MeltomeAtlasHandler(DataHandler):
             self.logger.error(f"Failed to write results to CSV file {output_file}: {e}")
             raise
         
+class DataType(Enum):
+    GENERIC = 0
+    FLIP = 1
+    LONGF = 2
+    MSPEC = 3 # Keep it? Although it will be functionally identical to LONGF processing - it just needs preporcessing
 
+class TppSigmoidPlotter:
+    
+    KEYS = ['Temperature', 'Abundance', 'Replicate']
+    
+    def __init__(self, curve_params, melting_data = pd.DataFrame(), data_type : DataType = DataType.GENERIC, log_level = logging.INFO) -> None:
+        # Logger
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.setLevel(log_level)
+        
+        # Curve parameters
+        self.params = pd.Series(curve_params)
+        # Initilaze curve from params for evaluation
+        self.fitter = SigmoidFitter(log_level)
+        self.fitter.set_parameters(curve_params)
+        
+        # Intialize melting for scatterplot
+        self.melting_data = melting_data
 
-class TppPlotter:
-    pass
+        # Data type - for handling headers and unique fields
+        self.data_type = data_type
+        
+        match(self.data_type):
+            case DataType.GENERIC:
+                pass
+            case DataType.FLIP:
+                self.melting_data.rename({'fold_change' : 'Abundance', 'temperature' : 'Temperature'})
+                self.melting_data['Replicate'] = 'REP0'
+                if len(self.melting_data) == 20: # Data contains 2 rpelicates
+                    self.melting_data['Replicate'][1::2] = 'REP1'
+            case DataType.LONGF:
+                pass
+            
+    
+    @classmethod
+    def from_flip(cls, curve_params, melting_data, log_level = logging.INFO):
+        return cls(curve_params, melting_data, DataType.FLIP, log_level)
+    
+    @classmethod
+    def from_longf(cls, curve_params, melting_data, log_level = logging.INFO):
+        return cls(curve_params, melting_data, DataType.LONGF, log_level)
+    
+    @classmethod
+    def from_mspec(cls, curve_params, melting_data, log_level = logging.INFO):
+        # format mspec to longf
+        # return cls(curve_params, melting_data, DataType.LONGF, log_level)
+        pass
+    
+    @staticmethod
+    def plot_curve(curve_params : pd.Series, figsize=(8, 5)):
+        # Draw melting curve alone with melting point
+        pass
+    
+    @staticmethod
+    def plot_from_longf(curve_params : pd.Series, data_exp : pd.DataFrame = pd.DataFrame(), figsize=(8, 5)):
+    
+        fitter = SigmoidFitter()
+        fitter.set_parameters(curve_params.to_dict())
+        
+        sns.set_theme()
+        fig, ax = plt.subplots(figsize=figsize)
+        palette = sns.color_palette('colorblind')
+        legend_dots = []
+        number_repl = 0
+        try :
+            if not data_exp.empty:
+                number_repl = len(data_exp.Replicate.unique())
 
+                # Plot Experimental Data
+                sns.scatterplot(data=data_exp, x='Temperature', y='Abundance', hue='Replicate', palette=palette, 
+                                alpha=0.7, s=50, edgecolor='k',
+                                ax=ax, legend=False)
 
+                # Extract the unique colors used by the scatterplot
+                unique_colors = sns.color_palette(palette, number_repl)
+
+                # Create "Proxy" dots for the legend
+                for col in unique_colors:
+                    d = plt.Line2D([0], [0], alpha=0.7, marker='o',  # type: ignore
+                                markerfacecolor=col, markeredgecolor='k', markeredgewidth=1, 
+                                markersize=8, linestyle='')
+                    legend_dots.append(d)
+                    
+            # Plot Interpolated Curve
+            sns.lineplot(x=np.arange(0, 100.1, 0.1), y=fitter.eval(np.arange(0, 100.1, 0.1)), color=palette[number_repl], label="Interpolated Fit", ax=ax)
+
+            # Plot Melting Point Marker
+            ax.scatter(fitter.get_melting_temp(), 0.5, color="red", marker='x', s=50, zorder=5, label='Melting Point')
+
+            # Add the Coordinate Label
+            ax.annotate(f'Tm = {fitter.get_melting_temp():.2f}', 
+                        xy=(fitter.get_melting_temp(), 0.5), 
+                        xytext=(12, -5), 
+                        textcoords='offset points',
+                        fontsize=8, 
+                        color='red', 
+                        fontweight='bold')
+
+            # Get the existing handles (the Fit line)
+            handles, labels = ax.get_legend_handles_labels()
+
+            ax.set_ylim(0)
+            ax.set_xlabel('Temperature (°C)')
+            ax.set_title(f"Melting Behaviour of {curve_params.pid} with R2 = {curve_params.r_squared:.3f}, RMSE = {curve_params.rmse:.3f}")
+            
+            if not data_exp.empty:
+                # Add our grouped dots tuple to the handles
+                ax.legend(
+                    handles=[handles[0], tuple(legend_dots), handles[1]], 
+                    labels=[labels[0], "Experimental Replicates", labels[1]],
+                    handler_map={tuple: HandlerTuple(ndivide=None, pad=0.5)},
+                    loc='upper right'
+                )
+                # Resize plot for experimental data
+                ax.set_xlim(data_exp.Temperature.min() - 5, 100)
+                
+            else:
+                ax.legend(loc='upper right')
+                
+            
+            plt.show()
+        except Exception as e:
+            raise
+    
+    def plot(self, plot_exp = True, figsize = (8, 5)):
+        # Figure parameters
+        sns.set_theme()
+        fig, ax = plt.subplots(figsize=figsize)
+        palette = sns.color_palette('colorblind')
+        legend_dots = []
+        number_repl = 0
+        try :
+            if plot_exp and not self.melting_data.empty:
+                number_repl = len(self.melting_data.Replicate.unique())
+
+                # Plot Experimental Data
+                # sns.scatterplot(data=data, x='Temperature', y='Abundance', color="gray", label="Experimental", ax=ax)
+                sns.scatterplot(data=self.melting_data, x='Temperature', y='Abundance', hue='Replicate', palette=palette, 
+                                alpha=0.7, s=50, edgecolor='k',
+                                ax=ax, legend=False)
+
+                # Extract the unique colors used by the scatterplot
+                unique_colors = sns.color_palette(palette, number_repl)
+
+                # Create "Proxy" dots for the legend
+                for col in unique_colors:
+                    d = plt.Line2D([0], [0], alpha=0.7, marker='o',  # type: ignore
+                                markerfacecolor=col, markeredgecolor='k', markeredgewidth=1, 
+                                markersize=8, linestyle='')
+                    legend_dots.append(d)
+                    
+            # Plot Interpolated Curve
+            sns.lineplot(x=np.arange(0, 100.1, 0.1), y=self.fitter.eval(np.arange(0, 100.1, 0.1)), color=palette[number_repl], label="Interpolated Fit", ax=ax)
+
+            # Plot Melting Point Marker
+            ax.scatter(self.fitter.get_melting_temp(), 0.5, color="red", marker='x', s=50, zorder=5, label='Melting Point')
+
+            # Add the Coordinate Label
+            ax.annotate(f'Tm = {self.fitter.get_melting_temp():.2f}', 
+                        xy=(self.fitter.get_melting_temp(), 0.5), 
+                        xytext=(12, -5), 
+                        textcoords='offset points',
+                        fontsize=8, 
+                        color='red', 
+                        fontweight='bold')
+
+            # Get the existing handles (the Fit line)
+            handles, labels = ax.get_legend_handles_labels()
+
+            ax.set_ylim(0)
+            ax.set_xlabel('Temperature (°C)')
+            ax.set_title(f"Melting Behaviour of {self.params.pid} with R2 = {self.params.r_squared:.3f}, RMSE = {self.params.rmse:.3f}")
+            
+            if plot_exp and not self.melting_data.empty:
+                # Add our grouped dots tuple to the handles
+                # handles[0] is the line, tuple(legend_dots) is the row of dots
+                ax.legend(
+                    handles=[handles[0], tuple(legend_dots), handles[1]], 
+                    labels=[labels[0], "Experimental Replicates", labels[1]],
+                    handler_map={tuple: HandlerTuple(ndivide=None, pad=0.5)},
+                    loc='upper right'
+                )
+                # Resize plot for experimental data
+                ax.set_xlim(self.melting_data.Temperature.min() - 5, 100)
+                
+            else:
+                ax.legend(loc='upper right')
+                
+            
+            plt.show()
+        except Exception as e:
+            self.logger.error(f"Error while plotting figure : {e}")
+        
 ### Functions
 def setup_logging(log_file: Optional[str] = None, log_level: int = logging.INFO) -> None:
     """
@@ -517,7 +810,7 @@ def setup_logging(log_file: Optional[str] = None, log_level: int = logging.INFO)
         
         logging.info(f"Logging to file: {log_file}")
 
-def get_comon_parser(description = "Script Description", epilog = None):
+def get_common_parser(description = "Script Description", epilog = None):
     parser = argparse.ArgumentParser(description=description,
         epilog=textwrap.dedent(epilog) if epilog else None,
         formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -586,7 +879,7 @@ def main():
     
     description = "Curve Fitting Tool with External Function"
     epilog = """AAAAAAH!"""
-    parser = get_comon_parser(description=description, epilog=epilog)
+    parser = get_common_parser(description=description, epilog=epilog)
         
     args = parser.parse_args()
     
@@ -598,8 +891,6 @@ def main():
     else:
         LOG_LEVEL = logging.INFO
     
-    # output_path = 'C:/Users/alexa/Documents/PROHITS/Output/MeltingBehaviourCLI'
-
     LOG_FILE = f'main_{timestamp_str}.log'
     LOG_PATH = os.path.join(args.output, LOG_FILE)
     setup_logging(LOG_PATH, LOG_LEVEL)
@@ -610,15 +901,17 @@ def main():
     
     logging.info(f"Log level: {logging.getLevelName(LOG_LEVEL)}")
     
+    # Main process for data coming from FLIP Meltome
     if args.format == 'flip':
         data_handler = MeltomeAtlasHandler(args.input, output_path, LOG_LEVEL)
         if args.parallel:
             data_handler.process_parallel(args.n_chunks, args.n_jobs)
         else:
             data_handler.process(args.n_chunks)
-            
+    # Main process for data coming from raw ms data     
     if args.format == 'mass_spec':
         return NotImplemented
+    # Main process from data coming from longF format
     if args.format == 'long_f':
         return NotImplemented
     else:

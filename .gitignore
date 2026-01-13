@@ -1,6 +1,7 @@
 # 1. Ignore files
 *.log
 config_paths.py
+test_kenneth_data.ipynb
 
 # 2. Ignore all folders
 test/
