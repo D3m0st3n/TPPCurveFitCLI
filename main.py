@@ -14,7 +14,7 @@ import logging
 import datetime
 import textwrap
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any, Callable
+from typing import Optional
 from enum import Enum
 
 import numpy as np
@@ -793,7 +793,6 @@ class TppSigmoidPlotter:
             
             if plot_exp and not self.melting_data.empty:
                 # Add our grouped dots tuple to the handles
-                # handles[0] is the line, tuple(legend_dots) is the row of dots
                 ax.legend(
                     handles=[handles[0], tuple(legend_dots), handles[1]], 
                     labels=[labels[0], "Experimental Replicates", labels[1]],
@@ -868,22 +867,22 @@ def get_common_parser(description = "Script Description", epilog = None):
         "-f", "--format",
         type=str,
         required=True,
-        choices=['generic', 'mass_spec', 'long_f', "flip"],
+        choices=['generic', 'mass_spec', 'longf', "flip"],
         help="Define input format and how it will handle by the program"    
     )
     
-    parser.add_argument(
-        "-p", "--parallel",
-        action="store_true",
-        default=True,
-        help="Defines if input file is processed with parallelization. Defaults to True. Only for FLIP/Meltome data."
-    )
+    # parser.add_argument(
+    #     "-p", "--parallel",
+    #     action="store_true",
+    #     default=True,
+    #     help="Defines if input file is processed with parallelization. Defaults to True. Only for FLIP & GENERIC data format."
+    # )
     
     parser.add_argument(
         "--n_chunks",
         type=int,
         default=100,
-        help="Number of chunks to split the data into for processing. Only for FLIP/Meltome data."
+        help="Number of chunks to split the data into for processing. Only for FLIP & GENERIC data format."
     )
     
     parser.add_argument(
@@ -913,7 +912,12 @@ def main():
     timestamp_str = now.strftime("%Y-%m-%d_%H-%M")
         
     description = "Curve Fitting Tool with External Function"
-    epilog = """AAAAAAH!"""
+    epilog = """
+    Use example (with longf_example.csv):\n
+    $ python .\main.py -i .\example\longf_example.csv -v -f longf \n
+    Run main script with longf_example.csv as input, output is CWD and format to process data is longf.
+    Will create a main_$timestamp.log file, ./result_main_$timestamp directory where curve results will be stored. \n \n \n
+    """
     parser = get_common_parser(description=description, epilog=epilog)
         
     args = parser.parse_args()
@@ -939,15 +943,12 @@ def main():
     # Main process for data coming from FLIP Meltome
     if args.format == 'flip':
         data_handler = MeltomeAtlasHandler(args.input, output_path, LOG_LEVEL)
-        if args.parallel:
-            data_handler.process_parallel(args.n_chunks, args.n_jobs)
-        else:
-            data_handler.process(args.n_chunks)
+        data_handler.process_parallel(args.n_chunks, args.n_jobs)
     # Main process for data coming from raw ms data     
     if args.format == 'mass_spec':
         return NotImplemented
     # Main process from data coming from longF format
-    if args.format == 'long_f':
+    if args.format == 'longf':
         data_handler = LongFormatHandler(args.input, output_path, LOG_LEVEL)
         data_handler.process(args.n_jobs)
     # Generic processing for data
