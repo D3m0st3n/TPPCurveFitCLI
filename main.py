@@ -305,7 +305,7 @@ class LongFormatHandler(DataHandler):
         pid = data_serie.Accession.iloc[0]
         replicate = data_serie.Replicate.iloc[0]
         
-        if data_serie.Temperature.iloc[0] != 1.0:
+        if data_serie.sort_values(by='Temperature').Abundance.iloc[0] != 1.0:
             self.logger.warning(f"Uh oh, looks like your data has not been normalized!")
         
         try:
@@ -853,6 +853,7 @@ def get_common_parser(description = "Script Description", epilog = None):
     parser.add_argument(
         "-i", "--input",
         type=str,
+        required=True,
         help="Path to input data file"
     )
     
@@ -866,6 +867,7 @@ def get_common_parser(description = "Script Description", epilog = None):
     parser.add_argument(
         "-f", "--format",
         type=str,
+        required=True,
         choices=['generic', 'mass_spec', 'long_f', "flip"],
         help="Define input format and how it will handle by the program"    
     )
@@ -929,7 +931,7 @@ def main():
     setup_logging(LOG_PATH, LOG_LEVEL)
     
     output_path = args.output
-    result_file = f'results_meltome_{timestamp_str}'
+    result_file = f'results_main_{timestamp_str}'
     output_path = os.path.join(output_path, result_file)
     
     logging.info(f"Log level: {logging.getLevelName(LOG_LEVEL)}")
@@ -946,7 +948,8 @@ def main():
         return NotImplemented
     # Main process from data coming from longF format
     if args.format == 'long_f':
-        return NotImplemented
+        data_handler = LongFormatHandler(args.input, output_path, LOG_LEVEL)
+        data_handler.process(args.n_jobs)
     # Generic processing for data
     if args.format == 'generic':
         return NotImplemented
