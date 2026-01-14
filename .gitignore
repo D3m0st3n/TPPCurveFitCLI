@@ -3,7 +3,7 @@
 config_paths.py
 test_kenneth_data.ipynb
 
-# 2. Ignore all folders
+# 2. Ignore folders
 test/
 results_*/
 

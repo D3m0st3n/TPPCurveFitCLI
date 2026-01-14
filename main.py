@@ -75,7 +75,7 @@ class SigmoidFitter:
     def get_parameter_names():
         return ['pl', 'a', 'b']
     
-    def fit_curve(self, temperature : np.ndarray, fold_change : np.ndarray, p0 : np.ndarray = np.array([0.1, 1, 0.1])):
+    def fit_curve(self, temperature : np.ndarray, fold_change : np.ndarray, p0 : np.ndarray = np.array([0.1, 1, 0.1])): 
 
         # Initial parameters
         if (p0 != self.p0).any():
@@ -175,10 +175,17 @@ class DataHandler:
     Generic Data handling class for loading TPP data, fit a sigmoid, and save results.
 
     """
-    def __init__(self, log_level : int = logging.INFO):
+    def __init__(self, output_path : str, log_level : int = logging.INFO):
+        # Logger set up
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(log_level)
         
+        
+        # Ouptut creation
+        self.output_dir = Path(output_path)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.logger.info(f"Output directory: {self.output_dir.absolute()}")
+
         # self.ifilename = None
         # self.ofilename = None
         self.data = None
@@ -217,8 +224,36 @@ class DataHandler:
         except Exception as e:
             raise ValueError(f"Error loading data: {str(e)}")
 
-    def save_results(self, output_path):
-        pass
+    def save_curve_fit_results(self, results : pd.DataFrame, intialize : bool = False, output_file = "curve_fit.csv"):
+        """
+        Save results to a CSV file in output path of instance.
+        Handle file creation or append with the initialize argument.
+
+        Args:
+            results (pd.DataFrame): Dataframe containing curve fit results
+            intialize (bool, optional): Define if results should be appeneded or if a new file has to be created. Defaults to False.
+            output_file (str): Name of output file. defautls to curve_fit.csv.
+        """
+        if results.empty:
+            return
+
+        output_file = Path(self.output_dir / output_file)
+        file_mode = 'a'
+        header = False
+        
+        if intialize:
+            file_mode = 'x'
+            header = True 
+
+        self.logger.debug(f"Output dir {output_file}")
+        self.logger.debug(f"Writing results to {output_file.name} in mode {file_mode}")
+
+        try:
+            results.to_csv(output_file, mode=file_mode, index=False, header=header)
+
+        except IOError as e:
+            self.logger.error(f"Failed to write results to CSV file {output_file}: {e}")
+            raise
 
     def process(self) -> pd.DataFrame:
         return pd.DataFrame()
@@ -226,7 +261,7 @@ class DataHandler:
 class LongFormatHandler(DataHandler):
     
     def __init__(self, file_path : str, output_path : str, log_level : int = logging.INFO) -> None:
-        super().__init__(log_level)
+        super().__init__(output_path, log_level)
         self.logger.info("LongF Handler initialization")
         
         self.n_jobs = 6
@@ -239,7 +274,7 @@ class LongFormatHandler(DataHandler):
             raise ValueError(f"Input file is not in CSV format: {file_path}")
 
         # Result header 
-        self.header = ['pid', 'pl', 'a', 'b', 'rmse', 'r_squared', 'tm_pred']
+        self.header = ['pid', 'replicate', 'pl', 'a', 'b', 'rmse', 'r_squared', 'tm_pred']
         
         # Load data
         try:
@@ -249,12 +284,6 @@ class LongFormatHandler(DataHandler):
     
         except Exception as e:
             raise ValueError(f"Error loading data: {str(e)}")
-        
-        # Ouptut creation
-        self.output_dir = Path(output_path)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.logger.info(f"Output directory: {self.output_dir.absolute()}")
-
         
     def normalize_chunk(self, data_serie : pd.DataFrame) -> pd.DataFrame:
         data_serie.Abundance = data_serie.Abundance / data_serie.sort_values(by='Temperature').Abundance.iloc[0]
@@ -276,6 +305,9 @@ class LongFormatHandler(DataHandler):
         pid = data_serie.Accession.iloc[0]
         replicate = data_serie.Replicate.iloc[0]
         
+        if data_serie.Temperature.iloc[0] != 1.0:
+            self.logger.warning(f"Uh oh, looks like your data has not been normalized!")
+        
         try:
             # Intialize curve fitter and loading melting behaviour
             melting_curve = SigmoidFitter(self.logger.level)
@@ -292,7 +324,7 @@ class LongFormatHandler(DataHandler):
             'b': round(melting_curve.b, 6),
             'rmse': round(melting_curve.rmse, 4),
             'r_squared': round(melting_curve.r_squared, 4),
-            'tm_pred': melting_curve.get_melting_temp(),
+            'tm_pred': round(melting_curve.get_melting_temp(), 2),
             'status': 'SUCCESS' # Add a status flag
             }   
             
@@ -320,6 +352,28 @@ class LongFormatHandler(DataHandler):
             )
             raise
     
+    def process(self, n_jobs : int = 10) -> pd.DataFrame:
+        
+        self.logger.info(f"Normalize data")
+        
+        self.normalize_data(n_jobs)
+        
+        self.logger.info(f"START - curve fitting process parallel")
+        
+        chunks = self.data.groupby(by=['Accession', 'Replicate']).groups
+        try:
+            results = pd.DataFrame(Parallel(n_jobs)(delayed(self.process_serie)(self.data.loc[ids]) for _, ids in chunks.items()))
+    
+            # Save chunk results              
+            self.save_curve_fit_results(results[self.header], intialize=True)
+        
+        except Exception as e:
+            self.logger.error(f"Error in processing: {e}")
+            raise
+        
+        self.logger.info(f"END - Curve fitting process parallel")
+
+        return results  
 
 class MeltomeAtlasHandler(DataHandler):
     """
@@ -328,7 +382,7 @@ class MeltomeAtlasHandler(DataHandler):
     It also manage output directories for various tasks.
     """
     def __init__(self, flip_meltome_path : str, output_path : str, log_level : int = logging.INFO):
-        super().__init__(log_level)
+        super().__init__(output_path, log_level)
         self.logger.info(f"Meltome Handler initialization")
 
         # Meltome loading
@@ -339,7 +393,7 @@ class MeltomeAtlasHandler(DataHandler):
             raise ValueError(f"Input file is not in JSON format: {flip_meltome_path}")
         
         # Result header 
-        self.header = ['pid', 'replicate', 'runName', 'pl', 'a', 'b', 'rmse', 'r_squared', 'tm_pred']
+        self.header = ['pid', 'runName', 'pl', 'a', 'b', 'rmse', 'r_squared', 'tm_pred', 'tm_flip']
         
         # Load data
         try:
@@ -349,12 +403,6 @@ class MeltomeAtlasHandler(DataHandler):
     
         except Exception as e:
             raise ValueError(f"Error loading data: {str(e)}")
-        
-        # Ouptut creation
-        self.output_dir = Path(output_path)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.logger.info(f"Output directory: {self.output_dir.absolute()}")
-    
 
     def select_subset(self, n : int, group_key : str = 'runName'):
         try:
@@ -546,40 +594,11 @@ class MeltomeAtlasHandler(DataHandler):
         self.logger.info(f"END - Curve fitting process parallel")
 
         return results
-        
-
-    def save_curve_fit_results(self, results : pd.DataFrame, intialize : bool = False, output_file = "curve_fit.csv"):
-        """
-        Save results to a CSV file in output path of instance.
-        Handle file creation or append with the initialize argument.
-
-        Args:
-            results (pd.DataFrame): Dataframe containing curve fit results
-            intialize (bool, optional): Define if results should be appeneded or if a new file has to be created. Defaults to False.
-            output_file (str): Name of output file. defautls to curve_fit.csv.
-        """
-        if results.empty:
-            return
-
-        output_file = Path(self.output_dir / output_file)
-        file_mode = 'a'
-        header = False
-        
-        if intialize:
-            file_mode = 'x'
-            header = True 
-
-        self.logger.debug(f"Output dir {output_file}")
-        self.logger.debug(f"Writing results to {output_file.name} in mode {file_mode}")
-
-        try:
-            results.to_csv(output_file, mode=file_mode, index=False, header=header)
-
-        except IOError as e:
-            self.logger.error(f"Failed to write results to CSV file {output_file}: {e}")
-            raise
-        
+      
 class DataType(Enum):
+    """
+    Class for easier type management of TppSigmoidPlotter. 
+    """
     GENERIC = 0
     FLIP = 1
     LONGF = 2
@@ -610,7 +629,9 @@ class TppSigmoidPlotter:
             case DataType.GENERIC:
                 pass
             case DataType.FLIP:
+                # Rename columns
                 self.melting_data.rename({'fold_change' : 'Abundance', 'temperature' : 'Temperature'})
+                # Add Replicate information
                 self.melting_data['Replicate'] = 'REP0'
                 if len(self.melting_data) == 20: # Data contains 2 rpelicates
                     self.melting_data['Replicate'][1::2] = 'REP1'
@@ -739,17 +760,30 @@ class TppSigmoidPlotter:
             sns.lineplot(x=np.arange(0, 100.1, 0.1), y=self.fitter.eval(np.arange(0, 100.1, 0.1)), color=palette[number_repl], label="Interpolated Fit", ax=ax)
 
             # Plot Melting Point Marker
-            ax.scatter(self.fitter.get_melting_temp(), 0.5, color="red", marker='x', s=50, zorder=5, label='Melting Point')
+            ax.scatter(self.params.tm_pred, 0.5, color="red", marker='x', s=50, zorder=5, label='Melting Point')
 
             # Add the Coordinate Label
-            ax.annotate(f'Tm = {self.fitter.get_melting_temp():.2f}', 
-                        xy=(self.fitter.get_melting_temp(), 0.5), 
+            ax.annotate(f'Tm = {self.params.tm_pred:.2f}', 
+                        xy=(self.params.tm_pred, 0.5), 
                         xytext=(12, -5), 
                         textcoords='offset points',
                         fontsize=8, 
                         color='red', 
                         fontweight='bold')
 
+            # Plot Meltome Tm if available
+            if self.data_type == DataType.FLIP:
+                ax.scatter(self.params.tm_flip, 0.5, color="purple", marker='x', s=50, zorder=5, label='Meltome Melting Point ')
+
+                # Add the Coordinate Label
+                ax.annotate(f'Tm = {self.params.tm_flip:.2f}', 
+                            xy=(self.params.tm_flip, 0.5), 
+                            xytext=(12, -5), 
+                            textcoords='offset points',
+                            fontsize=8, 
+                            color='red', 
+                            fontweight='bold')
+            
             # Get the existing handles (the Fit line)
             handles, labels = ax.get_legend_handles_labels()
 
@@ -814,6 +848,7 @@ def get_common_parser(description = "Script Description", epilog = None):
     parser = argparse.ArgumentParser(description=description,
         epilog=textwrap.dedent(epilog) if epilog else None,
         formatter_class=argparse.RawDescriptionHelpFormatter)
+    
     # Required arguments
     parser.add_argument(
         "-i", "--input",
@@ -831,21 +866,22 @@ def get_common_parser(description = "Script Description", epilog = None):
     parser.add_argument(
         "-f", "--format",
         type=str,
-        choices=['mass_spec', 'long_f', "flip"],
+        choices=['generic', 'mass_spec', 'long_f', "flip"],
         help="Define input format and how it will handle by the program"    
     )
     
     parser.add_argument(
         "-p", "--parallel",
         action="store_true",
-        help="Defines if input file is processed with parallelization"
+        default=True,
+        help="Defines if input file is processed with parallelization. Defaults to True. Only for FLIP/Meltome data."
     )
     
     parser.add_argument(
         "--n_chunks",
         type=int,
         default=100,
-        help="Number of chunks to split the data into for processing"
+        help="Number of chunks to split the data into for processing. Only for FLIP/Meltome data."
     )
     
     parser.add_argument(
@@ -873,10 +909,7 @@ def main():
     # Timestamp
     now = datetime.datetime.now()
     timestamp_str = now.strftime("%Y-%m-%d_%H-%M")
-    
-
-    """Main entry point for the CLI script."""
-    
+        
     description = "Curve Fitting Tool with External Function"
     epilog = """AAAAAAH!"""
     parser = get_common_parser(description=description, epilog=epilog)
@@ -913,6 +946,9 @@ def main():
         return NotImplemented
     # Main process from data coming from longF format
     if args.format == 'long_f':
+        return NotImplemented
+    # Generic processing for data
+    if args.format == 'generic':
         return NotImplemented
     else:
         return NotImplemented
