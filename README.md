@@ -21,13 +21,11 @@ This work is based on the following [paper](https://www.science.org/doi/10.1126/
 For Meltome format:
 ```
 $ python meltome_example.py
-
 ```
 It processes the example file `meltome_example.json`. It will create a log file, an output directory and compare the results with expected output (`meltome_curve_fit.csv`)
 
 For LongF format:
 ```
 $ python longf_example.py
-
 ```
 It processes the example file `longf_example.csv`. It will create a log file, an output directory and compare the results with expected output (`longf_curve_fit.csv`)
