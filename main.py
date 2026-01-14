@@ -180,14 +180,15 @@ class DataHandler:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(log_level)
         
+        #
+        
         
         # Ouptut creation
         self.output_dir = Path(output_path)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.logger.info(f"Output directory: {self.output_dir.absolute()}")
 
-        # self.ifilename = None
-        # self.ofilename = None
+        
         self.data = None
         self.fit_results = None
     
